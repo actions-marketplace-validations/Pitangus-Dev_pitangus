@@ -16,7 +16,6 @@ not authorization to test anything: that stays with whoever operates Pitangus.
 from __future__ import annotations
 
 import http.client
-import ipaddress
 import re
 import secrets
 import socket
@@ -36,6 +35,7 @@ from pitangus.modules.sources.domain_schedule import ScheduleError
 from pitangus.modules.sources.tables import domain_registry
 from pitangus.shared import db, documents
 from pitangus.shared import log as logging_setup
+from pitangus.shared.addresses import is_public
 from pitangus.shared.db import TENANT
 from pitangus.shared.i18n import msg, text
 from pitangus.version import USER_AGENT
@@ -66,6 +66,7 @@ BODY_LIMIT = 64 * 1024
 FETCH_SECONDS = 10    # a whole HTTPS fetch, however slowly the server answers
 SCOPE_LIMIT = 20      # hosts a scan may list
 LABEL = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
+HOST_CHARACTERS = re.compile(r"[a-z0-9.-]{1,253}")
 
 
 # Demo data (`pitangus demo --full`) registers its domains as this, under names reserved for documentation (RFC 2606).
@@ -189,7 +190,8 @@ def _host(url: str) -> tuple[str, str]:
     if (parsed.scheme != "https" or parsed.username or parsed.password or port is not None
             or parsed.fragment or parsed.query or not host or len(host) > 253):
         raise DomainError(msg("sources.domains.https_only"))
-    if not valid_host(host):
+    # Checked on the very string requests are sent to: letters, digits, dots and hyphens only; valid_host, its shape.
+    if not HOST_CHARACTERS.fullmatch(host) or not valid_host(host):
         raise DomainError(msg("sources.domains.invalid_domain"))
     return host, f"https://{host}{parsed.path or '/'}"
 
@@ -306,6 +308,13 @@ def meta_tokens(page: bytes) -> list[str]:
     return parser.found
 
 
+def tls_context() -> ssl.SSLContext:
+    """Certificate and name validation, and TLS 1.2 at least whatever the interpreter or OpenSSL defaults to."""
+    context = ssl.create_default_context()
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
+    return context
+
+
 def https_get(host: str, address: str, path: str, *, limit: int = BODY_LIMIT, seconds: int = FETCH_SECONDS,
               headers=()) -> tuple[int, bytes]:
     """One GET of `https://<host><path>` sent to `address` (already checked as public) with SNI and certificate
@@ -313,7 +322,7 @@ def https_get(host: str, address: str, path: str, *, limit: int = BODY_LIMIT, se
     `seconds` in all; `headers`: (name, value) pairs to add (the domain's saved ones, already validated). Raises
     OSError, ssl.SSLError or http.client.HTTPException when it can't."""
     deadline = time.monotonic() + seconds
-    ssl_context = ssl.create_default_context()
+    ssl_context = tls_context()
     with socket.create_connection((address, 443), timeout=6) as raw:
         with ssl_context.wrap_socket(raw, server_hostname=host) as secure:
             connection = http.client.HTTPSConnection(host, 443, timeout=6)
@@ -609,13 +618,6 @@ def _moment(value) -> datetime | None:
     return moment.replace(tzinfo=timezone.utc) if moment and moment.tzinfo is None else moment
 
 
-def _is_public(address: str) -> bool:
-    try:
-        return ipaddress.ip_address(address.split("%")[0]).is_global
-    except ValueError:
-        return False
-
-
 def public_address(host: str) -> str:
     """The address a scan of `host` is pinned to, once every address the name resolves to is public (no loopback,
     private, link-local or cloud metadata range). IPv4 first: Docker's default bridge often has no IPv6 route."""
@@ -626,7 +628,7 @@ def public_address(host: str) -> str:
     addresses = sorted({info[4][0].split("%")[0] for info in infos}, key=lambda address: (":" in address, address))
     if not addresses:
         raise DomainError(msg("sources.domains.check.dns_error"))
-    if not all(_is_public(address) for address in addresses):
+    if not all(is_public(address) for address in addresses):
         raise DomainError(msg("sources.domains.check.private_address"))
     return addresses[0]
 
@@ -650,10 +652,10 @@ def check_reachability(url: str) -> dict:
     if not addresses:
         return {"host": host, "reachable": False, "status": "dns_error", "https": False, "public": None,
                 "detail": msg("sources.domains.check.dns_error")}
-    if not all(_is_public(address) for address in addresses):
+    if not all(is_public(address) for address in addresses):
         return {"host": host, "reachable": False, "status": "private_address", "https": False, "public": False,
                 "detail": msg("sources.domains.check.private_address")}
-    ssl_context = ssl.create_default_context()
+    ssl_context = tls_context()
     try:
         with socket.create_connection((addresses[0], 443), timeout=6) as raw:
             with ssl_context.wrap_socket(raw, server_hostname=host) as secure:

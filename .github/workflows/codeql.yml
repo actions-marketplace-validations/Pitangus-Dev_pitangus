@@ -5,8 +5,9 @@
 # - Runs on every pull request, on pushes to main and weekly, so new CodeQL queries also reach code that hasn't changed.
 # - Results go to code scanning, one category per language. On a pull request they appear as checks and annotations;
 #   this workflow doesn't decide the merge on its own.
-# - Left out: fixtures/ and rules/tests/, vulnerable on purpose (the samples the engines and the rules must catch), and
-#   pitangus/app/static/, the panel's build output (web/ is its source, analyzed here).
+# - Left out: fixtures/ and rules/tests/, vulnerable on purpose (the samples the engines and the rules must catch); the
+#   tests (tests/ and the panel's *.test.ts(x)), which plant made-up secrets and hostile input for the code to catch
+#   and never run in production; and pitangus/app/static/, the panel's build output (web/ is its source, analyzed here).
 #
 # Actions pinned by commit; least-privilege permissions per job; no credentials persisted in the checkout.
 name: CodeQL
@@ -43,7 +44,7 @@ jobs:
           persist-credentials: false
 
       - name: Initialize CodeQL
-        uses: github/codeql-action/init@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2  # v4.38.2
+        uses: github/codeql-action/init@24c54180a607b1449ed407dd24f251e4e9147c8d  # v4.38.3
         with:
           languages: ${{ matrix.language }}
           build-mode: none
@@ -51,9 +52,12 @@ jobs:
             paths-ignore:
               - fixtures
               - rules/tests
+              - tests
+              - web/src/**/*.test.ts
+              - web/src/**/*.test.tsx
               - pitangus/app/static
 
       - name: Analyze
-        uses: github/codeql-action/analyze@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2  # v4.38.2
+        uses: github/codeql-action/analyze@24c54180a607b1449ed407dd24f251e4e9147c8d  # v4.38.3
         with:
           category: /language:${{ matrix.language }}

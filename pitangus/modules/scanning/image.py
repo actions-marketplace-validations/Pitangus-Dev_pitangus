@@ -30,6 +30,7 @@ from pathlib import Path
 
 from pitangus.modules.intel import data_sources
 from pitangus.shared import log as logging_setup, settings
+from pitangus.shared.addresses import is_public
 from pitangus.shared.i18n import default_locale, msg, text
 from pitangus.modules.intel.advisories import cvss3_base_score, fingerprint as sca_fingerprint, is_malicious, mark_malicious, prioritize, severity_from_score
 from pitangus.modules.intel.packages import OS_FAMILIES, canonical_id, dependency_fingerprint, family, package_name
@@ -50,7 +51,8 @@ REFERENCE = re.compile(rf"(?:(?P<registry>(?:[a-zA-Z0-9-]+\.)+[a-zA-Z0-9-]+(?::\
                        rf"(?P<repository>{_COMPONENT}(?:/{_COMPONENT}){{0,5}})"
                        r"(?::(?P<tag>[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}))?"
                        r"(?:@(?P<digest>sha256:[0-9a-f]{64}))?")
-HOST = re.compile(r"(?:[a-z0-9-]+\.)+[a-z0-9-]+(?::\d{1,5})?|localhost(?::\d{1,5})?|[a-z0-9-]+:\d{1,5}")
+REGISTRY_LABEL = re.compile(r"[a-z0-9-]+")
+REGISTRY_PORT = re.compile(r"\d{1,5}")
 
 # The package families image fingerprints used before intel/packages.py unified them; only for `_former_fingerprint`.
 _FORMER_FAMILY = {"node-pkg": "npm", "npm": "npm", "yarn": "npm", "pnpm": "npm", "python-pkg": "pypi", "pip": "pypi", "pipenv": "pypi",
@@ -126,13 +128,12 @@ def check_registry_address(registry: str) -> dict[str, str]:
     """
     if settings.flag("PITANGUS_ALLOW_PRIVATE_REGISTRIES"):
         return {}
-    import ipaddress
     host = _host_only(registry)
     try:
         addresses = {info[4][0] for info in socket.getaddrinfo(host, 443, proto=socket.IPPROTO_TCP)}
     except OSError as exc:
         raise ImageError(msg("scanning.image.errors.unresolvable", registry=registry)) from exc
-    if not addresses or not all(ipaddress.ip_address(address.split("%")[0]).is_global for address in addresses):
+    if not addresses or not all(is_public(address) for address in addresses):
         raise ImageError(msg("scanning.image.errors.private_address", registry=registry))
     if registry == DOCKER_HUB:
         return {}
@@ -141,6 +142,16 @@ def check_registry_address(registry: str) -> dict[str, str]:
 
 
 # --- registry credentials -----------------------------------------------------------------
+
+def registry_host(host: str) -> bool:
+    """A registry as `docker login` names it: a dotted name, `localhost`, or a single name with a port; any of them may
+    carry a port. Parsed piece by piece, so the time it takes grows with the length of `host` and nothing more."""
+    name, colon, port = host.partition(":")
+    if colon and not REGISTRY_PORT.fullmatch(port):
+        return False
+    labels = name.split(".")
+    return all(REGISTRY_LABEL.fullmatch(label) for label in labels) and (len(labels) > 1 or bool(colon) or name == "localhost")
+
 
 def _stored() -> dict:
     from pitangus.shared.vault import VaultError, get
@@ -163,7 +174,7 @@ def save_registry(registry: str, username: str, token: str, *, by: str) -> list[
     host = str(registry or "").strip().lower()
     if host in ("index.docker.io", "registry-1.docker.io", "hub.docker.com"):
         host = DOCKER_HUB
-    if not HOST.fullmatch(host) or len(host) > 200:
+    if len(host) > 200 or not registry_host(host):
         raise ImageError(msg("scanning.image.errors.invalid_registry"))
     if not isinstance(username, str) or not 1 <= len(username.strip()) <= 200 or any(ord(char) < 33 for char in username.strip()):
         raise ImageError(msg("scanning.image.errors.invalid_username"))

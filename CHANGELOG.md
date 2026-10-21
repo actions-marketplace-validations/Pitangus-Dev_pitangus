@@ -7,6 +7,44 @@ between minor versions: anything that changes behaviour is called out below.
 
 ## [Unreleased]
 
+### Security
+
+- **The SSRF checks judge IPv6 addresses that carry an IPv4 by that IPv4.** Python's `ipaddress` calls NAT64 addresses
+  (`64:ff9b::/96`, RFC 6052) global whatever they embed, so on an IPv6-only network with DNS64/NAT64 a domain, registry
+  or webhook whose name resolved to `64:ff9b::a00:1` passed the check and reached 10.0.0.1. One shared check
+  (`pitangus/shared/addresses.py`) now backs the domain probe and verification, the registry check, the webhook URLs and
+  the egress detection: NAT64 well-known and IPv4-mapped (`::ffff:0:0/96`) addresses are public only when their IPv4
+  is; the NAT64 local-use prefix (`64:ff9b:1::/48`, RFC 8215, where the operator decides where the IPv4 sits) and the
+  deprecated IPv4-compatible form (`::/96`, which `ipaddress` also called global) never are; 6to4 (`2002::/16`) and
+  Teredo (`2001::/32`) stay refused as before, and their embedded IPv4 is checked too. A NAT64 prefix of the
+  operator's own (network-specific, any global /96) can't be told apart from a normal address: on such a network, keep
+  the server's own egress filtering.
+- **Pillow 13.0.0** (was 12.3.0; it comes with ReportLab, which draws the PDF reports). Fixes GHSA-8g5g-8vmr-9782
+  (CVE-2026-112403, critical: heap overflow decoding a lossless JPEG), GHSA-58r4-6rv3-gfh8, GHSA-65qm-jvmh-6pqg,
+  GHSA-q45j-58j2-45rg, GHSA-pchr-8j38-3x4p, GHSA-p4wg-p73j-c528, GHSA-c6hw-5grf-ff96 (high), GHSA-vx6w-vv9f-6gvg and
+  GHSA-462x-pgg6-55fp (medium). Pitangus only hands Pillow its own logo (a PNG in the package), never an image or PDF
+  from a user or a repository, so none of these was reachable; the image no longer carries them. Pillow 13's removed
+  APIs aren't used by Pitangus or by ReportLab 5.0.1, and the reports render the same.
+- **certifi 2026.10.19** (was 2026.7.22): GHSA-6q48-6c7w-9gw2 (critical), the emSign root whose intermediate CAs had
+  their keys compromised. certifi is only in the development lock (the tests' HTTP client) and in Checkov's environment
+  in the `pitangus-worker` image, where Checkov runs without network; the app image doesn't carry it.
+- **aiohttp 3.14.4** (was 3.14.3) in Checkov's environment in the `pitangus-worker` image: GHSA-9xw5-w5jj-pvcg,
+  GHSA-5wr8-gcqf-gqf3, GHSA-2g87-pp6c-29x5 (high), GHSA-f9xw-jh8m-3mwq, GHSA-6cjc-53gc-5rqm, GHSA-pqxq-w44r-73xw
+  (medium), GHSA-gx76-c99x-2c96 and GHSA-494j-54xm-rwp3 (low). Most are in aiohttp's server, which Checkov doesn't run,
+  and Checkov makes no connections in Pitangus. Checkov 3.3.19 allows it (`aiohttp<3.15`), so no override is needed.
+- **Image scan: a history step can no longer hang the worker.** Rebuilding the Dockerfile from an image's history
+  read the build arguments of a `RUN |N KEY=value …` step with a pattern that backtracked exponentially when the values
+  carried `=` (base64 padding, for instance) and no `/bin/sh -c` followed: about forty such arguments kept a worker busy
+  for good. Argument names can't contain `=` any more, so it is read in linear time with the same result (CodeQL
+  py/redos).
+- **Hardening found by CodeQL's first analysis** (none was exploitable): the domain proofs and the reachability check
+  require TLS 1.2 or later explicitly, instead of relying on the interpreter's default; the server version in a web
+  finding's evidence and the `requirements*.txt` name check no longer take quadratic time on long input (both inputs
+  were already short).
+- **CodeQL leaves the tests out** (`tests/` and the panel's `*.test.ts(x)`), as it already did with `fixtures/` and
+  `rules/tests/`: they plant made-up secrets and hostile input on purpose. The demo sample's `osv-scanner.toml`
+  declares two newer lodash 4.17.20 advisories (GHSA-xxjr-mmjv-4gpg, GHSA-r5fr-rjxr-66jc), which the demo still shows.
+
 ## [0.15.1] - 2026-10-17
 
 ### Upgrade notes
